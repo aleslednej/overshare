@@ -8,11 +8,13 @@ import { check } from './checks'
 import { type Config, loadConfig } from './config'
 import { OvershareError } from './errors'
 import { confirmed, type Index, publish, stage } from './release'
-import { pickCandidate, readTargetState, type TargetState, validateTag } from './tags'
+import { pickCandidate, readTargetState, resolveCommit, type TargetState, validateTag } from './tags'
 
-const USAGE = 'Usage: overshare plan|release [tag] [--notes <file>] [--file <path>=<file>]... [--yes]'
+export const USAGE = 'Usage: overshare plan|release [tag] [--notes <file>] [--file <path>=<file>]... [--yes]\n       overshare check [ref] [--notes <file>] [--file <path>=<file>]...'
 
-export type Options = { command: 'plan' | 'release'; tag?: string; notes?: string; files: string[]; yes: boolean }
+const COMMANDS = ['plan', 'release', 'check'] as const
+
+export type Options = { command: (typeof COMMANDS)[number]; ref?: string; notes?: string; files: string[]; yes: boolean }
 export type Preflight = { config: Config; gitleaks: string; notes?: string; files: { path: string; local: string }[] }
 type Env = { cwd: string; path?: string }
 
@@ -31,10 +33,11 @@ export function parseCli(argv: string[]): Options {
   } catch (e) {
     throw new OvershareError(`${(e as Error).message}\n${USAGE}`)
   }
-  const [command, tag, ...rest] = parsed.positionals
-  if ((command !== 'plan' && command !== 'release') || rest.length) throw new OvershareError(USAGE)
+  const [command, ref, ...rest] = parsed.positionals
+  const known = (c?: string): c is Options['command'] => COMMANDS.some((k) => k === c)
+  if (!known(command) || rest.length) throw new OvershareError(USAGE)
   const { notes, file = [], yes = false } = parsed.values
-  return { command, tag, notes, files: file, yes }
+  return { command, ref, notes, files: file, yes }
 }
 
 /** Everything that can be checked locally, before any network access. */
@@ -81,6 +84,17 @@ function printBuild({ files, shadowed, binary, warnings }: BuildResult) {
   for (const warning of warnings) console.log(`Warning: ${warning}`)
 }
 
+/** Builds the export of `ref` into `root` and runs every check over it; returns the export's directory. */
+async function buildAndCheck(pre: Preflight, sourceRepo: string, ref: string, lastExport: string | undefined, root: string): Promise<string> {
+  const { config, gitleaks, notes, files } = pre
+  const dir = join(root, 'export')
+  const result = await build({ sourceRepo, config, ref, lastExport, files }, dir)
+  printBuild(result)
+  await check({ config, gitleaks, dir, files: result.files, binary: result.binary, notes, scratch: join(root, 'checks') })
+  console.log('Checks passed.')
+  return dir
+}
+
 function printPlan({ changes }: Index, targetUrl: string) {
   console.log(`Changes in ${targetUrl} (${changes.length}):`)
   for (const { status, path } of changes) console.log(`  ${status} ${path}`)
@@ -90,17 +104,21 @@ export async function main(argv: string[], env: Env = { cwd: process.cwd() }): P
   let root: string | undefined
   try {
     const opts = parseCli(argv)
-    const { config, gitleaks, notes, files } = await preflight(opts, env)
+    const pre = await preflight(opts, env)
+    const { config, notes } = pre
+    if (opts.command === 'check') { // never touches the target repo
+      const ref = opts.ref ?? 'HEAD'
+      const sha = await resolveCommit(env.cwd, ref)
+      console.log(`Ref: ${ref} (${sha})`)
+      root = await mkdtemp(join(tmpdir(), 'overshare-'))
+      await buildAndCheck(pre, env.cwd, sha, undefined, root)
+      return 0
+    }
     const state = await readTargetState(env.cwd, config.targetUrl)
-    const tag = opts.tag === undefined ? selectTag(state) : validateTag(state, opts.tag)
+    const tag = opts.ref === undefined ? selectTag(state) : validateTag(state, opts.ref)
     console.log(`Tag: ${tag}`)
     root = await mkdtemp(join(tmpdir(), 'overshare-'))
-    const input = { sourceRepo: env.cwd, config, tag, lastExport: state.lastExport, files }
-    const dir = join(root, 'export')
-    const result = await build(input, dir)
-    printBuild(result)
-    await check({ config, gitleaks, dir, files: result.files, binary: result.binary, notes, scratch: join(root, 'checks') })
-    console.log('Checks passed.')
+    const dir = await buildAndCheck(pre, env.cwd, `refs/tags/${tag}`, state.lastExport, root)
     const index = await stage(config.targetUrl, state.mainSha, dir, join(root, 'index'))
     if (!index.changes.length) throw new OvershareError('Nothing to export: the target repo already has this content.')
     printPlan(index, config.targetUrl)

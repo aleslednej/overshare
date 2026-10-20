@@ -25,12 +25,16 @@ clone of this repo:
 ```sh
 bun /path/to/overshare/src/cli.ts plan    [tag] [--notes <file>] [--file <path>=<file>]...
 bun /path/to/overshare/src/cli.ts release [tag]  --notes <file>  [--file <path>=<file>]... [--yes]
+bun /path/to/overshare/src/cli.ts check   [ref] [--notes <file>] [--file <path>=<file>]...
 ```
 
 - `plan` is a dry run: the same pipeline as `release`, ending with the list of added, modified and deleted files in
   the target repo. It changes nothing.
 - `release` builds the export, asks for confirmation, then pushes the release commit and an annotated tag
   atomically. `--notes` is required; the notes become the commit message body and the tag annotation, verbatim.
+- `check` builds the export of any git ref or SHA (default `HEAD`) and runs every check on it, and on the notes when
+  given. It never contacts the target repo, so it can run on any branch before a release, e.g. on every pull request.
+  It lists the export's files and exits 0, or lists every finding and exits 1.
 - `--file <path>=<file>` adds or replaces a file in the export (a one-off README, a changelog). Repeatable.
 - `--yes` skips the confirmation.
 - Without `tag`, overshare lists the release tags that are ready to export and asks you to pick one.
@@ -86,7 +90,8 @@ Each check collects all of its findings, then the export aborts listing them:
 
 ## Target repo setup
 
-- Disable pull requests and enable private vulnerability reporting.
+- Restrict pull requests to collaborators (Settings → Pull requests → Collaborators only) and enable private
+  vulnerability reporting.
 - Commit to the target repo only through overshare; a manual commit is overwritten by the next export.
 - Publish GitHub Releases and packages from the target repo's own CI on tag push.
 

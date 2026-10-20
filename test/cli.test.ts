@@ -1,7 +1,7 @@
-import { beforeEach, describe, expect, test } from 'bun:test'
+import { beforeEach, describe, expect, spyOn, test } from 'bun:test'
 import { join } from 'node:path'
-import { parseCli, preflight } from '../src/cli'
-import { CONFIG, gitleaksPath, tempDir } from './helpers'
+import { main, parseCli, preflight } from '../src/cli'
+import { CONFIG, git, gitleaksPath, tempDir } from './helpers'
 
 let cwd: string
 let path: string
@@ -17,11 +17,16 @@ const run = (...argv: string[]) => preflight(parseCli(argv), { cwd, path })
 describe('cli arguments', () => {
   test('parses command, tag and options', () => {
     expect(parseCli(['release', 'v1.0.0', '--notes', 'n.md', '--file', 'a=b', '--file', 'c=d', '--yes'])).toEqual({
-      command: 'release', tag: 'v1.0.0', notes: 'n.md', files: ['a=b', 'c=d'], yes: true,
+      command: 'release', ref: 'v1.0.0', notes: 'n.md', files: ['a=b', 'c=d'], yes: true,
     })
   })
 
-  test.each([[[]], [['push']], [['plan', 'v1.0.0', 'extra']], [['plan', '--bogus']]])('rejects %p', (argv) => {
+  test('check takes any ref, or none', () => {
+    expect(parseCli(['check', 'feature/x'])).toMatchObject({ command: 'check', ref: 'feature/x' })
+    expect(parseCli(['check']).ref).toBeUndefined()
+  })
+
+  test.each([[[]], [['push']], [['check', 'a', 'b']], [['plan', 'v1.0.0', 'extra']], [['plan', '--bogus']]])('rejects %p', (argv) => {
     expect(() => parseCli(argv)).toThrow(/Usage/)
   })
 })
@@ -61,5 +66,52 @@ describe('preflight', () => {
     await expect(preflight(parseCli(['plan']), { cwd, path: cwd })).rejects.toThrow(/gitleaks is not in PATH/)
     await Bun.write(join(cwd, 'overshare.yaml'), 'target: a/b\n')
     await expect(run('plan')).rejects.toThrow(/identity is required/)
+  })
+})
+
+describe('check', () => {
+  // no git user, no origin, and a target that does not exist: check must reach none of them
+  const config = `${CONFIG.replace(/^target: .*/, 'target: /nonexistent/target.git')}forbidden: [acme]\n`
+  const commit = async (file: string) => {
+    await Bun.write(join(cwd, 'src', 'a.ts'), file)
+    await Bun.write(join(cwd, 'README.md'), '# Tool\n')
+    await git(cwd, 'add', 'src', 'README.md')
+    await git(cwd, 'commit', '--quiet', '-m', 'change')
+  }
+  beforeEach(async () => {
+    await Bun.write(join(cwd, 'overshare.yaml'), config)
+    await git(cwd, 'init', '--quiet', '-b', 'feature')
+  })
+  const check = (...argv: string[]) => main(['check', ...argv], { cwd, path })
+
+  test('passes a clean ref that is neither a tag nor on main', async () => {
+    await commit('export const a = 1\n')
+    expect(await check()).toBe(0)
+    expect(await check('feature', '--notes', 'notes.md')).toBe(0)
+  })
+
+  test('fails a ref with a forbidden pattern and lists the finding', async () => {
+    await commit('// see the acme wiki\n')
+    const sha = await git(cwd, 'rev-parse', 'HEAD')
+    await commit('export const a = 1\n')
+    const error = spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      expect(await check(sha)).toBe(1)
+      expect(error).toHaveBeenCalledWith(expect.stringContaining('forbidden pattern /acme/i in src/a.ts'))
+      expect(await check()).toBe(0)
+    } finally {
+      error.mockRestore()
+    }
+  })
+
+  test('fails a ref that names no commit', async () => {
+    await commit('export const a = 1\n')
+    const error = spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      expect(await check('nope')).toBe(1)
+      expect(error).toHaveBeenCalledWith('nope is not a commit in the source repo.')
+    } finally {
+      error.mockRestore()
+    }
   })
 })

@@ -6,15 +6,14 @@ export type BuildResult = { files: string[]; shadowed: string[]; stale: string[]
 export type BuildInput = {
   sourceRepo: string
   config: Config
-  tag: string
+  ref: string // a commit-ish, e.g. refs/tags/v1.0.0
   lastExport?: string
   files: { path: string; local: string }[]
 }
 
-/** Writes the export of `tag` into `dir`: allowlist, transforms, committed overlay, operator's files. */
+/** Writes the export of `ref` into `dir`: allowlist, transforms, committed overlay, operator's files. */
 export async function build(input: BuildInput, dir: string): Promise<BuildResult> {
-  const { sourceRepo, config, tag, lastExport } = input
-  const ref = `refs/tags/${tag}`
+  const { sourceRepo, config, ref, lastExport } = input
   await mkdir(dir, { recursive: true })
   const allowlisted = await extract(sourceRepo, ref, config.include, dir)
   const warnings = await transform(config, allowlisted, dir)

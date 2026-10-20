@@ -31,7 +31,7 @@ const FILES = {
 
 async function run(repo: string, config: Record<string, unknown>, extra: Partial<BuildInput> = {}) {
   const dir = join(await tempDir(), 'export')
-  const input = { sourceRepo: repo, tag: 'v1.0.0', files: [], ...extra }
+  const input = { sourceRepo: repo, ref: 'refs/tags/v1.0.0', files: [], ...extra }
   // include and overlay skip config validation, so the test sees that build itself treats them literally
   const parsed = parseConfig({ target: 'a/b', identity: 'R <r@x.y>', ...config, include: ['x'], overlay: undefined })
   const paths = { include: config.include as string[], overlay: config.overlay as string | undefined }
@@ -95,12 +95,13 @@ describe('build', () => {
     await commitFiles(repo, { 'src/a\nb.ts': 'changed\n' }, 'v1.1.0')
     const transforms = [{ files: 'src/**', replace: 'github', with: 'gitlab' }]
     const config = { include: ['src/'], overlay: 'oss', transforms }
-    const { tree, result } = await run(repo, config, { tag: 'v1.1.0', lastExport: 'v1.0.0' })
+    const { tree, result } = await run(repo, config, { ref: 'refs/tags/v1.1.0', lastExport: 'v1.0.0' })
     expect(Object.keys(tree).sort()).toEqual(['CONTRIBUTING.md', 'README.md', 'src/a\nb.ts', `src/${pax}`, `src/${ustar}`, 'src/index.ts'].sort())
     expect([result.shadowed, result.stale]).toEqual([['src/a\nb.ts'], ['src/a\nb.ts']])
   })
 
-  test('archived names that are not UTF-8 keep their bytes', async () => {
+  // macOS file systems accept only UTF-8 names, so writing these bytes fails with EILSEQ there; Linux runs it.
+  test.skipIf(process.platform === 'darwin')('archived names that are not UTF-8 keep their bytes', async () => {
     const ff = decodePath(Buffer.from([0x61, 0xff, 0x2e, 0x74, 0x73]))
     const pax = `${'d'.repeat(120)}/${ff}`
     const repo = await sourceRepo(FILES)
@@ -114,7 +115,7 @@ describe('build', () => {
     await commitFiles(repo, {}, 'v1.1.0')
     const transforms = [{ files: 'src/**', replace: 'github', with: 'gitlab' }]
     const config = { include: ['src/'], overlay: 'oss', transforms }
-    const { tree, result } = await run(repo, config, { tag: 'v1.1.0', lastExport: 'v1.0.0' })
+    const { tree, result } = await run(repo, config, { ref: 'refs/tags/v1.1.0', lastExport: 'v1.0.0' })
     expect(tree).toMatchObject({ [`src/${ff}`]: 'github\n', [`src/${pax}`]: 'gitlab\n' })
     expect([result.shadowed, result.stale]).toEqual([[`src/${ff}`], [`src/${ff}`]])
   })
@@ -126,7 +127,7 @@ describe('build', () => {
     await commitFiles(repo, {}, 'v1.1.0')
     const local = join(await tempDir(), 'published')
     await Bun.write(local, 'operator\n')
-    const files = (path: string) => ({ tag: 'v1.1.0', files: [{ path, local }] })
+    const files = (path: string) => ({ ref: 'refs/tags/v1.1.0', files: [{ path, local }] })
     await expect(run(repo, { include: ['out'] }, files('out/published'))).rejects.toThrow(/goes through a symlink/)
     await expect(run(repo, { include: ['README.md'] }, files('../published'))).rejects.toThrow(/"\.\." segments/)
     await expect(run(repo, { include: ['README.md'] }, files('a/../README.md'))).rejects.toThrow(/"\.\." segments/)
@@ -150,8 +151,8 @@ describe('build', () => {
     const repo = await sourceRepo(FILES, 'v1.0.0')
     await commitFiles(repo, { 'README.md': 'internal, changed\n', 'src/index.ts': 'changed\n' }, 'v1.1.0')
     const config = { include: ['src/', 'README.md'], overlay: 'oss' }
-    expect((await run(repo, config, { tag: 'v1.1.0' })).result.stale).toEqual([])
-    const { result } = await run(repo, config, { tag: 'v1.1.0', lastExport: 'v1.0.0' })
+    expect((await run(repo, config, { ref: 'refs/tags/v1.1.0' })).result.stale).toEqual([])
+    const { result } = await run(repo, config, { ref: 'refs/tags/v1.1.0', lastExport: 'v1.0.0' })
     expect(result.stale).toEqual(['README.md'])
     expect(result.warnings).toEqual(['Stale overlay: README.md changed in the source repo since v1.0.0.'])
   })
@@ -168,7 +169,7 @@ describe('build', () => {
     expect(Object.keys(tree).sort()).toEqual(['CONTRIBUTING.md', 'README.md', 'src/index.ts'])
 
     await commitFiles(repo, { '.gitattributes': 'src/index.ts export-subst\n' }, 'v2.0.0')
-    await expect(run(repo, { include: ['src/'] }, { tag: 'v2.0.0' })).rejects.toThrow(/export-subst .*src\/index\.ts/)
+    await expect(run(repo, { include: ['src/'] }, { ref: 'refs/tags/v2.0.0' })).rejects.toThrow(/export-subst .*src\/index\.ts/)
   })
 
   test('plan prints the export and removes its temporary root', async () => {

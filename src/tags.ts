@@ -11,6 +11,14 @@ export async function git(cwd: string, ...args: string[]): Promise<string> {
   return result.stdout.toString()
 }
 
+/** The commit `ref` names in the source repo, as a SHA. */
+export async function resolveCommit(repo: string, ref: string): Promise<string> {
+  const result = await Bun.$`git rev-parse --verify --quiet --end-of-options ${`${ref}^{commit}`}`.cwd(repo).quiet().nothrow()
+  const stderr = result.stderr.toString().trim() // --quiet leaves it empty when the ref merely does not resolve
+  if (result.exitCode !== 0) throw new OvershareError(stderr ? `git rev-parse failed: ${stderr}` : `${ref} is not a commit in the source repo.`)
+  return result.stdout.toString().trim()
+}
+
 /** `vMAJOR.MINOR.PATCH` without pre-release or build metadata. */
 export function parseReleaseTag(tag: string): bigint[] | undefined {
   const m = /^v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.exec(tag)
